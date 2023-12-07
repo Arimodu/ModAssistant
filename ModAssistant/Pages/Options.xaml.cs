@@ -63,6 +63,8 @@ namespace ModAssistant.Pages
             Utils.GetManualDir();
             DirectoryTextBlock.Text = InstallDirectory;
             GameTypeTextBlock.Text = InstallType;
+
+            Mods.Instance.PendingChanges = true;
         }
 
         private void OpenDirButton_Click(object sender, RoutedEventArgs e)

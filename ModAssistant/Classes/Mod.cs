@@ -1,8 +1,10 @@
+using System;
 using System.Collections.Generic;
 using ModAssistant.Pages;
 
 namespace ModAssistant
 {
+    [Serializable]
     public class Mod
     {
         public string name;
@@ -23,6 +25,7 @@ namespace ModAssistant
         public List<Mod> Dependents = new List<Mod>();
         public Mods.ModListItem ListItem;
 
+        [Serializable]
         public class Author
         {
             public string _id;
@@ -30,6 +33,7 @@ namespace ModAssistant
             public string lastLogin;
         }
 
+        [Serializable]
         public class DownloadLink
         {
             public string type;
@@ -37,12 +41,14 @@ namespace ModAssistant
             public FileHashes[] hashMd5;
         }
 
+        [Serializable]
         public class FileHashes
         {
             public string hash;
             public string file;
         }
 
+        [Serializable]
         public class Dependency
         {
             public string name;

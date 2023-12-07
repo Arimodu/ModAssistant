@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Configuration.Assemblies;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -11,8 +15,10 @@ using System.Windows.Data;
 using System.Windows.Forms;
 using System.Windows.Media.Animation;
 using System.Windows.Navigation;
+using ModAssistant.Classes;
 using ModAssistant.Libs;
 using static ModAssistant.Http;
+using static ModAssistant.Mod;
 using TextBox = System.Windows.Controls.TextBox;
 
 namespace ModAssistant.Pages
@@ -111,8 +117,13 @@ namespace ModAssistant.Pages
 
                 if (App.CheckInstalledMods)
                 {
-                    MainWindow.Instance.MainText = $"{FindResource("Mods:CheckingInstalledMods")}...";
-                    await Task.Run(async () => await CheckInstalledMods());
+
+                    var progress = new Progress<CheckInstalledModsProgress>((x) =>
+                    {
+                        MainWindow.Instance.MainText = $"{string.Format((string)FindResource("Mods:CheckingInstalledMods"), x.Directory, x.Current, x.Total)}";
+                    });
+
+                    await Task.Run(async () => await CheckInstalledMods(progress));
                     InstalledColumn.Width = double.NaN;
                     UninstallColumn.Width = 70;
                     DescriptionColumn.Width = 750;
@@ -142,6 +153,11 @@ namespace ModAssistant.Pages
                             if (b.Category == category) return 1;
                         }
 
+                        var ExternalCategory = "Unverified / External";
+                        if (a.Category == ExternalCategory && b.Category == ExternalCategory) return 0;
+                        if (a.Category == ExternalCategory) return 1;
+                        if (b.Category == ExternalCategory) return -1;
+
                         var categoryCompare = a.Category.CompareTo(b.Category);
                         if (categoryCompare != 0) return categoryCompare;
 
@@ -158,6 +174,7 @@ namespace ModAssistant.Pages
                 {
                     Console.WriteLine(ex.ToString());
                 }
+
 
                 view = (CollectionView)CollectionViewSource.GetDefaultView(ModsListView.ItemsSource);
                 PropertyGroupDescription groupDescription = new PropertyGroupDescription("Category");
@@ -179,15 +196,22 @@ namespace ModAssistant.Pages
             }
         }
 
-        public async Task CheckInstalledMods()
+        public class CheckInstalledModsProgress
+        {
+            public int Current { get; set; }
+            public int Total { get; set; }
+            public string Directory { get; set; }
+        }
+
+        public async Task CheckInstalledMods(IProgress<CheckInstalledModsProgress> progress = null)
         {
             await GetAllMods();
 
             GetBSIPAVersion();
-            CheckInstallDir("IPA/Pending/Plugins");
-            CheckInstallDir("IPA/Pending/Libs");
-            CheckInstallDir("Plugins");
-            CheckInstallDir("Libs");
+            CheckInstallDir("IPA/Pending/Plugins", progress);
+            CheckInstallDir("IPA/Pending/Libs", progress);
+            CheckInstallDir("Plugins", progress);
+            CheckInstallDir("Libs", progress);
         }
 
         public async Task GetAllMods()
@@ -206,43 +230,182 @@ namespace ModAssistant.Pages
             }
         }
 
-        private void CheckInstallDir(string directory)
+        private void CheckInstallDir(string directory, IProgress<CheckInstalledModsProgress> progress = null)
         {
             if (!Directory.Exists(Path.Combine(App.BeatSaberInstallDirectory, directory)))
             {
                 return;
             }
 
-            foreach (string file in Directory.GetFileSystemEntries(Path.Combine(App.BeatSaberInstallDirectory, directory)))
+            var files = Directory.GetFileSystemEntries(Path.Combine(App.BeatSaberInstallDirectory, directory));
+            var progressObject = new CheckInstalledModsProgress
             {
-                string fileExtension = Path.GetExtension(file);
+                Directory = directory,
+                Total = files.Length
+            };
+            progress?.Report(progressObject);
 
-                if (File.Exists(file) && (fileExtension == ".dll" || fileExtension == ".exe" || fileExtension == ".manifest"))
+            List<Thread> threads = new List<Thread>();
+
+            foreach (var file in files)
+            {
+                Thread thread = new Thread(() =>
                 {
-                    Mod mod = GetModFromHash(Utils.CalculateMD5(file));
-                    if (mod != null)
+                    string fileExtension = Path.GetExtension(file);
+
+                    if (File.Exists(file) && (fileExtension == ".dll" || fileExtension == ".exe" || fileExtension == ".manifest"))
                     {
-                        if (fileExtension == ".manifest")
+                        Mod mod = null; //GetModFromHash(Utils.CalculateMD5(file));
+
+                        if (fileExtension == ".dll" && mod == null) mod = LoadAssemblyInfo(file);
+
+                        if (mod != null)
                         {
-                            ManifestsToMatch.Add(mod);
-                        }
-                        else
-                        {
-                            if (directory.Contains("Libs"))
+                            if (fileExtension == ".manifest")
                             {
-                                if (!ManifestsToMatch.Contains(mod))
+                                ManifestsToMatch.Add(mod);
+                            }
+                            else
+                            {
+                                if (directory.Contains("Libs"))
                                 {
-                                    continue;
+                                    if (!ManifestsToMatch.Contains(mod))
+                                    {
+                                        return;
+                                    }
+
+                                    lock (ManifestsToMatch)
+                                    {
+                                        ManifestsToMatch.Remove(mod);
+                                    }
                                 }
 
-                                ManifestsToMatch.Remove(mod);
+                                lock (ManifestsToMatch)
+                                {
+                                    AddDetectedMod(mod);
+                                }
                             }
+                        }
+                    }
+                });
 
-                            AddDetectedMod(mod);
+                thread.Start();
+                threads.Add(thread);
+            }
+
+            while (threads.Any(t => t.IsAlive))
+            {
+                progressObject.Current = threads.Where(t => !t.IsAlive).Count();
+                progress.Report(progressObject);
+                Thread.Sleep(10);
+            }
+
+            // Leaving this just in case, because I am not sure how IsAlive works
+            foreach (var thread in threads)
+            {
+                progressObject.Current = progressObject.Total; // Just to make sure we show the full total
+                progress.Report(progressObject);
+                thread.Join();
+            }
+        }
+
+        public class Executor : MarshalByRefObject
+        {
+            public Mod LoadAssemblyInfo(string file, Mod[] AllModsList)
+            {
+                try
+                {
+                    Assembly assembly = Assembly.ReflectionOnlyLoadFrom(file);
+
+                    // Get the manifest module of the assembly
+                    Module manifestModule = assembly.ManifestModule;
+
+                    // Extract the namespace from the manifest module
+                    string[] segments = manifestModule.ScopeName.Split('.');
+                    string defaultNamespace = string.Join(".", segments.Take(segments.Length - 1));
+
+                    // Get the manifest resource stream (assuming the manifest file is embedded in the DLL)
+                    using (Stream manifestStream = assembly.GetManifestResourceStream($"{defaultNamespace}.manifest.json"))
+                    {
+                        if (manifestStream != null)
+                        {
+                            // Read the manifest content
+                            using (StreamReader reader = new StreamReader(manifestStream))
+                            {
+                                string manifestContent = reader.ReadToEnd();
+                                var manifest = Newtonsoft.Json.JsonConvert.DeserializeObject<ModManifest>(manifestContent);
+                                var mod = new Mod
+                                {
+                                    name = manifest.Name,
+                                    version = manifest.Version,
+                                    gameVersion = manifest.GameVersion,
+                                    author = new Mod.Author
+                                    {
+                                        username = manifest.Author
+                                    },
+                                    description = manifest.Description,
+                                    category = "Unverified / External",
+                                    link = file // Lets just reuse this part, so I dont have to change or add properties
+                                };
+
+                                var depsList = new List<Mod.Dependency>();
+                                foreach (var dependency in manifest.Dependencies)
+                                {
+                                    if (AllModsList.Any(x => x.name == dependency.Key))
+                                    {
+                                        var dep = AllModsList.FirstOrDefault(x => x.name == dependency.Key && x.version == dependency.Value.Replace("^", ""));
+                                        if (dep != null)
+                                        {
+                                            depsList.Add(new Mod.Dependency
+                                            {
+                                                name = dep.name,
+                                                _id = dep._id,
+                                                Mod = dep
+                                            });
+                                        }
+                                        continue;
+                                    }
+
+                                    depsList.Add(new Mod.Dependency { name = dependency.Key });
+                                }
+                                mod.dependencies = depsList.ToArray();
+                                return mod;
+                            }
                         }
                     }
                 }
+                catch (Exception)
+                {
+                    return null;
+                }
+
+                return null;
             }
+        }
+
+        private Mod LoadAssemblyInfo(string file)
+        {
+            AppDomain loadContext = AppDomain.CreateDomain($"{Path.GetFileName(file)}_AssemblyLoad");
+
+            try
+            {
+                // Load the Executor type into the new domain
+                Type executorType = typeof(Executor);
+                Executor executor = (Executor)loadContext.CreateInstanceAndUnwrap(
+                    executorType.Assembly.FullName,
+                    executorType.FullName);
+
+                // Call the LoadAssemblyInfo method in the new domain
+                return executor.LoadAssemblyInfo(file, AllModsList);
+            }
+            catch (Exception) { }
+            finally
+            {
+                // Unload the domain when done
+                AppDomain.Unload(loadContext);
+            }
+
+            return null;
         }
 
         public void GetBSIPAVersion()
@@ -307,7 +470,12 @@ namespace ModAssistant.Pages
             {
                 var resp = await HttpClient.GetAsync(Utils.Constants.BeatModsAPIUrl + Utils.Constants.BeatModsModsOptions + "&gameVersion=" + MainWindow.GameVersion);
                 var body = await resp.Content.ReadAsStringAsync();
-                ModsList = JsonSerializer.Deserialize<Mod[]>(body);
+                var official = JsonSerializer.Deserialize<Mod[]>(body);
+                var external = InstalledMods.Where(mod => mod.category == "Unverified / External");
+                var modsListTemp = new List<Mod>();
+                modsListTemp.AddRange(official);
+                modsListTemp.AddRange(external.Where(e => !official.Any(o => o.name == e.name)));
+                ModsList = modsListTemp.ToArray();
             }
             catch (Exception e)
             {
@@ -388,6 +556,9 @@ namespace ModAssistant.Pages
 
             foreach (Mod mod in ModsList)
             {
+                // Ignore external mods
+                if (mod.category == "Unverified / External") continue;
+
                 // Ignore mods that are newer than installed version
                 if (mod.ListItem.GetVersionComparison > 0) continue;
 
@@ -416,7 +587,7 @@ namespace ModAssistant.Pages
                 else if (mod.ListItem.IsSelected)
                 {
                     MainWindow.Instance.MainText = $"{string.Format((string)FindResource("Mods:InstallingMod"), mod.name)}...";
-                    await Task.Run(async () => await InstallMod(mod, Path.Combine(installDirectory, @"IPA\Pending")));
+                    await Task.Run(async () => await InstallMod(mod, Path.Combine(installDirectory, @"")));
                     MainWindow.Instance.MainText = $"{string.Format((string)FindResource("Mods:InstalledMod"), mod.name)}.";
                 }
             }
@@ -515,6 +686,25 @@ namespace ModAssistant.Pages
                 {
                     file.ExtractToFile(path, true);
                 }
+                catch (IOException)
+                {
+                    if (path.Contains("Plugins"))
+                    {
+                        var pendingPath = path.Replace("Plugins", "IPA\\Pending\\Plugins");
+                        if (!Directory.Exists(pendingPath.Remove(pendingPath.LastIndexOf('/')))) Directory.CreateDirectory(pendingPath.Remove(pendingPath.LastIndexOf('/')));
+                        await ExtractFile(file, pendingPath, seconds, name, maxTries, tryNumber + 1);
+                    }
+                    else if (path.Contains("Libs"))
+                    {
+                        var pendingPath = path.Replace("Libs", "IPA\\Pending\\Libs");
+                        if (!Directory.Exists(pendingPath.Remove(pendingPath.LastIndexOf('/')))) Directory.CreateDirectory(pendingPath.Remove(pendingPath.LastIndexOf('/')));
+                        await ExtractFile(file, pendingPath, seconds, name, maxTries, tryNumber + 1);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException();
+                    }
+                }
                 catch
                 {
                     MainWindow.Instance.MainText = $"{string.Format((string)FindResource("Mods:FailedExtract"), name, seconds, tryNumber + 1, maxTries)}";
@@ -556,10 +746,12 @@ namespace ModAssistant.Pages
 
         private void ResolveDependencies(Mod dependent)
         {
+            if (dependent == null) return;
             if (dependent.ListItem.IsSelected && dependent.dependencies.Length > 0)
             {
                 foreach (Mod.Dependency dependency in dependent.dependencies)
                 {
+                    if (dependency.Mod == null) continue;
                     if (dependency.Mod.ListItem.IsEnabled)
                     {
                         dependency.Mod.ListItem.PreviousState = dependency.Mod.ListItem.IsSelected;
@@ -772,7 +964,7 @@ namespace ModAssistant.Pages
 
         private void UninstallModFromList(Mod mod)
         {
-            UninstallMod(mod.ListItem.InstalledModInfo);
+            UninstallMod(mod);
             mod.ListItem.IsInstalled = false;
             mod.ListItem.InstalledVersion = null;
             if (App.SelectInstalledMods)
@@ -789,6 +981,14 @@ namespace ModAssistant.Pages
 
         public void UninstallMod(Mod mod)
         {
+            if (mod.category == "Unverified / External")
+            {
+                if (File.Exists(Path.Combine(mod.link)))
+                    File.Delete(Path.Combine(mod.link));
+                ModList.Remove(mod.ListItem);
+                ModsListView.ItemsSource = ModList;
+                return;
+            }
             Mod.DownloadLink links = null;
             foreach (Mod.DownloadLink link in mod.downloads)
             {

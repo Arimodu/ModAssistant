@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Configuration.Assemblies;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -18,7 +16,6 @@ using System.Windows.Navigation;
 using ModAssistant.Classes;
 using ModAssistant.Libs;
 using static ModAssistant.Http;
-using static ModAssistant.Mod;
 using TextBox = System.Windows.Controls.TextBox;
 
 namespace ModAssistant.Pages
@@ -154,7 +151,7 @@ namespace ModAssistant.Pages
                         }
 
                         var ExternalCategory = "Unverified / External";
-                        if (a.Category == ExternalCategory && b.Category == ExternalCategory) return 0;
+                        if (a.Category == ExternalCategory && b.Category == ExternalCategory) return a.ModName.CompareTo(b.ModName);
                         if (a.Category == ExternalCategory) return 1;
                         if (b.Category == ExternalCategory) return -1;
 
@@ -205,9 +202,10 @@ namespace ModAssistant.Pages
 
         public async Task CheckInstalledMods(IProgress<CheckInstalledModsProgress> progress = null)
         {
+            progress.Report(new CheckInstalledModsProgress { Directory = "N/A", Current = 0, Total = 0 });
             await GetAllMods();
 
-            GetBSIPAVersion();
+            //GetBSIPAVersion();
             CheckInstallDir("IPA/Pending/Plugins", progress);
             CheckInstallDir("IPA/Pending/Libs", progress);
             CheckInstallDir("Plugins", progress);
@@ -245,68 +243,45 @@ namespace ModAssistant.Pages
             };
             progress?.Report(progressObject);
 
-            List<Thread> threads = new List<Thread>();
-
-            foreach (var file in files)
+            Parallel.ForEach(files, (file) =>
             {
-                Thread thread = new Thread(() =>
+                string fileExtension = Path.GetExtension(file);
+
+                if (File.Exists(file) && (fileExtension == ".dll" || fileExtension == ".exe" || fileExtension == ".manifest"))
                 {
-                    string fileExtension = Path.GetExtension(file);
+                    Mod mod = GetModFromHash(Utils.CalculateMD5(file));
 
-                    if (File.Exists(file) && (fileExtension == ".dll" || fileExtension == ".exe" || fileExtension == ".manifest"))
+                    if (fileExtension == ".dll" && mod == null) mod = LoadAssemblyInfo(file);
+
+                    if (mod != null)
                     {
-                        Mod mod = null; //GetModFromHash(Utils.CalculateMD5(file));
-
-                        if (fileExtension == ".dll" && mod == null) mod = LoadAssemblyInfo(file);
-
-                        if (mod != null)
+                        if (fileExtension == ".manifest")
                         {
-                            if (fileExtension == ".manifest")
+                            ManifestsToMatch.Add(mod);
+                        }
+                        else
+                        {
+                            if (directory.Contains("Libs"))
                             {
-                                ManifestsToMatch.Add(mod);
-                            }
-                            else
-                            {
-                                if (directory.Contains("Libs"))
+                                if (!ManifestsToMatch.Contains(mod))
                                 {
-                                    if (!ManifestsToMatch.Contains(mod))
-                                    {
-                                        return;
-                                    }
-
-                                    lock (ManifestsToMatch)
-                                    {
-                                        ManifestsToMatch.Remove(mod);
-                                    }
+                                    return;
                                 }
 
-                                lock (ManifestsToMatch)
-                                {
-                                    AddDetectedMod(mod);
-                                }
+                                ManifestsToMatch.Remove(mod);
                             }
+
+                            AddDetectedMod(mod);
+
+                            progressObject.Current++;
+                            progress.Report(progressObject);
                         }
                     }
-                });
+                }
+            });
 
-                thread.Start();
-                threads.Add(thread);
-            }
-
-            while (threads.Any(t => t.IsAlive))
-            {
-                progressObject.Current = threads.Where(t => !t.IsAlive).Count();
-                progress.Report(progressObject);
-                Thread.Sleep(10);
-            }
-
-            // Leaving this just in case, because I am not sure how IsAlive works
-            foreach (var thread in threads)
-            {
-                progressObject.Current = progressObject.Total; // Just to make sure we show the full total
-                progress.Report(progressObject);
-                thread.Join();
-            }
+            progressObject.Current = progressObject.Total; // Just to make sure we show the full total
+            progress.Report(progressObject);
         }
 
         public class Executor : MarshalByRefObject
@@ -410,26 +385,26 @@ namespace ModAssistant.Pages
 
         public void GetBSIPAVersion()
         {
-            string InjectorPath = Path.Combine(App.BeatSaberInstallDirectory, "Beat Saber_Data", "Managed", "IPA.Injector.dll");
-            if (!File.Exists(InjectorPath)) return;
+            ////string InjectorPath = Path.Combine(App.BeatSaberInstallDirectory, "Beat Saber_Data", "Managed", "IPA.Injector.dll");
+            ////if (!File.Exists(InjectorPath)) return;
 
-            string InjectorHash = Utils.CalculateMD5(InjectorPath);
-            foreach (Mod mod in AllModsList)
-            {
-                if (mod.name.ToLowerInvariant() == "bsipa")
-                {
-                    foreach (Mod.DownloadLink download in mod.downloads)
-                    {
-                        foreach (Mod.FileHashes fileHash in download.hashMd5)
-                        {
-                            if (fileHash.hash == InjectorHash)
-                            {
-                                AddDetectedMod(mod);
-                            }
-                        }
-                    }
-                }
-            }
+            ////string InjectorHash = Utils.CalculateMD5(InjectorPath);
+            //foreach (Mod mod in AllModsList)
+            //{
+            //    if (mod.name.ToLowerInvariant() == "bsipa")
+            //    {
+            //        foreach (Mod.DownloadLink download in mod.downloads)
+            //        {
+            //            foreach (Mod.FileHashes fileHash in download.hashMd5)
+            //            {
+            //                if (fileHash.hash == InjectorHash)
+            //                {
+            //                    AddDetectedMod(mod);
+            //                }
+            //            }
+            //        }
+            //    }
+            //}
         }
 
         private void AddDetectedMod(Mod mod)
@@ -502,7 +477,8 @@ namespace ModAssistant.Pages
                     IsSelected = preSelected,
                     IsEnabled = !mod.required,
                     ModName = mod.name,
-                    ModVersion = mod.version,
+                    ModVersion = mod.category == "Unverified / External" ? "N/A" : mod.version,
+                    ModAuthor = GetAuthorName(mod),
                     ModDescription = mod.description.Replace("\r\n", " ").Replace("\n", " "),
                     ModRequired = mod.required,
                     ModInfo = mod,
@@ -549,6 +525,11 @@ namespace ModAssistant.Pages
             }
         }
 
+        private string GetAuthorName(Mod mod)
+        {
+            return null;
+        }
+
         public async void InstallMods()
         {
             MainWindow.Instance.InstallButton.IsEnabled = false;
@@ -567,6 +548,7 @@ namespace ModAssistant.Pages
 
                 if (mod.name.ToLowerInvariant() == "bsipa")
                 {
+                    continue;
                     MainWindow.Instance.MainText = $"{string.Format((string)FindResource("Mods:InstallingMod"), mod.name)}...";
                     await Task.Run(async () => await InstallMod(mod, installDirectory));
                     MainWindow.Instance.MainText = $"{string.Format((string)FindResource("Mods:InstalledMod"), mod.name)}.";
@@ -825,6 +807,7 @@ namespace ModAssistant.Pages
         {
             public string ModName { get; set; }
             public string ModVersion { get; set; }
+            public string ModAuthor { get; set; }
             public string ModDescription { get; set; }
             public bool ModRequired { get; set; }
             public bool PreviousState { get; set; }
@@ -931,20 +914,20 @@ namespace ModAssistant.Pages
 
         public void UninstallBSIPA(Mod.DownloadLink links)
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = Path.Combine(App.BeatSaberInstallDirectory, "IPA.exe"),
-                WorkingDirectory = App.BeatSaberInstallDirectory,
-                Arguments = "--revert -n"
-            }).WaitForExit();
+            //Process.Start(new ProcessStartInfo
+            //{
+            //    FileName = Path.Combine(App.BeatSaberInstallDirectory, "IPA.exe"),
+            //    WorkingDirectory = App.BeatSaberInstallDirectory,
+            //    Arguments = "--revert -n"
+            //}).WaitForExit();
 
-            foreach (Mod.FileHashes files in links.hashMd5)
-            {
-                string file = files.file.Replace("IPA/", "").Replace("Data", "Beat Saber_Data");
-                if (File.Exists(Path.Combine(App.BeatSaberInstallDirectory, file)))
-                    File.Delete(Path.Combine(App.BeatSaberInstallDirectory, file));
-            }
-            Options.Instance.YeetBSIPA.IsEnabled = false;
+            //foreach (Mod.FileHashes files in links.hashMd5)
+            //{
+            //    string file = files.file.Replace("IPA/", "").Replace("Data", "Beat Saber_Data");
+            //    if (File.Exists(Path.Combine(App.BeatSaberInstallDirectory, file)))
+            //        File.Delete(Path.Combine(App.BeatSaberInstallDirectory, file));
+            //}
+            //Options.Instance.YeetBSIPA.IsEnabled = false;
         }
 
         private void Uninstall_Click(object sender, RoutedEventArgs e)
@@ -1000,6 +983,7 @@ namespace ModAssistant.Pages
             }
             if (mod.name.ToLowerInvariant() == "bsipa")
             {
+                return;
                 var hasIPAExe = File.Exists(Path.Combine(App.BeatSaberInstallDirectory, "IPA.exe"));
                 var hasIPADir = Directory.Exists(Path.Combine(App.BeatSaberInstallDirectory, "IPA"));
 

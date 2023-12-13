@@ -79,6 +79,16 @@
                             </GridViewColumn>
                             <GridViewColumn DisplayMemberBinding="{Binding ModName}" Header="{DynamicResource Mods:Header:Name}" />
 
+                            <GridViewColumn>
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock
+                                            Text="{Binding ModAuthor}"
+                                            />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            
                             <GridViewColumn x:Name="InstalledColumn" Header="{DynamicResource Mods:Header:Installed}">
                                 <GridViewColumn.CellTemplate>
                                     <DataTemplate>

@@ -271,23 +271,23 @@ namespace ModAssistant.Pages
 
         private async void YeetBSIPAButton_Click(object sender, RoutedEventArgs e)
         {
-            if (Mods.Instance.AllModsList == null)
-            {
-                MainWindow.Instance.MainText = $"{Application.Current.FindResource("Options:GettingModList")}...";
-                await Task.Run(async () => await Mods.Instance.GetAllMods());
-                MainWindow.Instance.MainText = $"{Application.Current.FindResource("Options:FindingBSIPAVersion")}...";
-                await Task.Run(() => Mods.Instance.GetBSIPAVersion());
-            }
-            foreach (Mod mod in Mods.InstalledMods)
-            {
-                if (mod.name.ToLowerInvariant() == "bsipa")
-                {
-                    Mods.Instance.UninstallMod(mod);
-                    break;
-                }
-            }
+            //if (Mods.Instance.AllModsList == null)
+            //{
+            //    MainWindow.Instance.MainText = $"{Application.Current.FindResource("Options:GettingModList")}...";
+            //    await Task.Run(async () => await Mods.Instance.GetAllMods());
+            //    MainWindow.Instance.MainText = $"{Application.Current.FindResource("Options:FindingBSIPAVersion")}...";
+            //    //await Task.Run(() => Mods.Instance.GetBSIPAVersion());
+            //}
+            //foreach (Mod mod in Mods.InstalledMods)
+            //{
+            //    if (mod.name.ToLowerInvariant() == "bsipa")
+            //    {
+            //        Mods.Instance.UninstallMod(mod);
+            //        break;
+            //    }
+            //}
 
-            MainWindow.Instance.MainText = $"{Application.Current.FindResource("Options:BSIPAUninstalled")}...";
+            //MainWindow.Instance.MainText = $"{Application.Current.FindResource("Options:BSIPAUninstalled")}...";
         }
         private async void YeetModsButton_Click(object sender, RoutedEventArgs e)
         {
